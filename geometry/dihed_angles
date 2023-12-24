@@ -1,0 +1,213 @@
+#!/usr/bin/env python
+
+import sys
+
+
+def check_dependencies():
+    missing_dependencies = []
+
+    # Check if Python 3 is used
+    if sys.version_info[0] < 3:
+        missing_dependencies.append("Python 3")
+
+    # Check if RDKit is installed
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError:
+        missing_dependencies.append(
+            "RDKit (install via 'conda install -c conda-forge rdkit')"
+        )
+
+    # Check if OpenBabel is installed
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["obabel", "-V"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        missing_dependencies.append(
+            "OpenBabel (install via 'conda install -c conda-forge openbabel')"
+        )
+
+    return missing_dependencies
+
+
+missing_deps = check_dependencies()
+if missing_deps:
+    sys.exit("Error: Missing dependencies:\n- " + "\n- ".join(missing_deps))
+
+
+def print_help():
+    help_message = """
+    dihed_angles
+
+    Usage: dihed_angles [FILE1] [FILE2] ... [ATOM1] [ATOM2] [ATOM3] [ATOM4]
+
+    This script calculates the dihedral angle formed by four specified atoms
+    in one or more given molecule geometries in XYZ, PDB, or SDF format.
+    It supports files containing multiple configurations.
+
+    Dependencies:
+    - Python 3
+    - RDKit: Install via 'conda install -c conda-forge rdkit'
+    - OpenBabel: Install via 'conda install -c conda-forge openbabel'
+
+    Arguments:
+    FILE(s) - Path(s) to the molecule file(s) (with .xyz, .pdb, or .sdf extension).
+    ATOM1   - Index of the first atom in the dihedral angle.
+    ATOM2   - Index of the second atom in the dihedral angle.
+    ATOM3   - Index of the third atom in the dihedral angle.
+    ATOM4   - Index of the fourth atom in the dihedral angle.
+
+    Atom indexes should be zero based. The script automatically handles
+    multiple configurations within each file and outputs the dihedral angle
+    for each configuration with a unique identifier.
+
+    Example:
+    dihed_angles molecule1.xyz molecule2.sdf 1 2 3 4
+    """
+    print(help_message)
+
+
+# Perform imports
+import os
+import tempfile
+from rdkit import Chem
+from rdkit.Chem import AllChem
+
+# Check for help flag or incorrect number of arguments
+if "-h" in sys.argv or len(sys.argv) < 6:
+    print_help()
+    sys.exit(1)
+
+# Check for help flag or incorrect number of arguments
+if "-h" in sys.argv or len(sys.argv) < 6:
+    print_help()
+    sys.exit(1)
+
+
+# Function to get an RDKit molecule supplier for the file
+def get_mol_supplier(file, extension):
+    if extension == ".sdf":
+        return Chem.SDMolSupplier(file, removeHs=False)
+
+    with tempfile.NamedTemporaryFile(mode="w+", suffix=".sdf") as tf:
+        os.system(f"obabel {file} -osdf -O {tf.name} 2> /dev/null")
+        tf.seek(0)  # Go back to the beginning of the file
+        return Chem.SDMolSupplier(tf.name, removeHs=False)
+
+
+# Process each file
+for file in sys.argv[1:-4]:
+    if file == "-s":
+        continue
+
+    extension = os.path.splitext(file)[1].lower()
+
+    # Validate file extension and existence
+    if extension not in [".xyz", ".pdb", ".sdf"]:
+        print(f"Error: The file {file} must be in .xyz, .pdb, or .sdf format.")
+        sys.exit(1)
+
+    if not os.path.exists(file):
+        print(f"Error: The file {file} does not exist.")
+        sys.exit(1)
+
+    try:
+        suppl = get_mol_supplier(file, extension)
+        for idx, mol in enumerate(suppl):
+            if mol is None:
+                continue
+            dihed = AllChem.GetDihedralDeg(
+                mol.GetConformer(), *[int(i) for i in sys.argv[-4:]]
+            )
+            conf_id_str = str(idx + 1).zfill(len(str(len(suppl))))  # Pad with zeros
+            if "-s" in sys.argv:
+                print(f"{dihed}")
+            else:
+                print(f"{file}#{conf_id_str}: Dihedral angle = {dihed} degrees")
+    except Exception as e:
+        print(f"Error calculating dihedral angle for {file}: {e}")
+
+# #!/usr/bin/env python
+
+# from rdkit import Chem
+# from rdkit.Chem import rdMolTransforms
+# import os
+# import sys
+# import tempfile
+
+
+# def print_help():
+#     help_message = """
+#     dihed_angles
+
+#     Usage: dihed_angles [FILE1] [FILE2] ... [ATOM1] [ATOM2] [ATOM3] [ATOM4]
+
+#     This script calculates the dihedral angle formed by four specified atoms
+#     in one or more given molecule geometries in XYZ or PDB format.
+
+#     Arguments:
+#     FILE(s) - Path(s) to the molecule file(s) (with .xyz or .pdb extension).
+#     ATOM1   - Index of the first atom in the dihedral angle.
+#     ATOM2   - Index of the second atom in the dihedral angle.
+#     ATOM3   - Index of the third atom in the dihedral angle.
+#     ATOM4   - Index of the fourth atom in the dihedral angle.
+
+#     Atom indexes should be zero based.
+
+#     Example:
+#     dihed_angles molecule1.xyz molecule2.pdb 1 2 3 4
+#     """
+#     print(help_message)
+
+
+# # Check for help flag or incorrect number of arguments
+# if "-h" in sys.argv or len(sys.argv) < 6:
+#     print_help()
+#     sys.exit(1)
+
+# for file in sys.argv[1:-4]:
+#     if file == "-s":
+#         continue
+#     filename = os.path.splitext(file)[0]
+#     extension = os.path.splitext(file)[1].lower()
+
+#     # Validate file extension and existence
+#     if extension not in [".xyz", ".pdb"]:
+#         print(f"Error: The file {file} must be in .xyz or .pdb format.")
+#         sys.exit(1)
+
+#     if not os.path.exists(file):
+#         print(f"Error: The file {file} does not exist.")
+#         sys.exit(1)
+
+#     if extension == ".xyz":
+#         tf = tempfile.NamedTemporaryFile()
+#         os.system(f"obabel {file} -opdb -O {tf.name} 2> /dev/null")
+#         mol = Chem.MolFromPDBFile(tf.name)
+#         tf.close()
+#     else:
+#         mol = Chem.MolFromPDBFile(file)
+
+#     try:
+#         dihed = rdMolTransforms.GetDihedralDeg(
+#             mol.GetConformer(), *[int(i) for i in sys.argv[-4:]]
+#         )
+#         if "-s" in sys.argv:
+#             print(f"{dihed}")
+#         else:
+#             print(f"{file}: Dihedral angle = {dihed} degrees")
+#     except Exception as e:
+#         print(f"Error calculating dihedral angle for {file}: {e}")
+#         continue  # Proceed to the next file
+
+#     # dihed = rdMolTransforms.GetDihedralDeg(
+#     #     mol.GetConformer(), *[int(i) for i in sys.argv[-4:]]
+#     # )
+#     # print(dihed)
