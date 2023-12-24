@@ -1,0 +1,340 @@
+#!/usr/bin/env python
+
+import sys
+import subprocess
+
+
+# Function to check dependencies
+def check_dependencies():
+    missing_dependencies = []
+
+    # Check Python version
+    if sys.version_info[0] < 3:
+        missing_dependencies.append("Python 3 or higher")
+
+    # Check RDKit installation
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+    except ImportError:
+        missing_dependencies.append(
+            "RDKit (install via 'conda install -c conda-forge rdkit')"
+        )
+
+    # Check if OpenBabel is installed
+    try:
+        subprocess.run(
+            ["obabel", "-V"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        missing_dependencies.append(
+            "OpenBabel (install via 'conda install -c conda-forge openbabel')"
+        )
+
+    return missing_dependencies
+
+
+# Perform dependency checks
+dependencies = check_dependencies()
+if dependencies:
+    sys.exit("Error: Missing dependencies:\n- " + "\n- ".join(dependencies))
+
+from rdkit import Chem
+from rdkit.Chem import AllChem
+import copy
+import argparse
+import tempfile
+import os
+
+
+def print_help():
+    help_message = """
+    align_molecules
+
+    Usage: 
+    Standard Mode: align_molecules [REFERENCE_FILE] [FILE1] [FILE2] ... [-r REF_FRAME] [-idx 'ATOM_INDICES'] [-c] [-f FORMAT] [-v]
+    Include Mode: align_molecules -i [REFERENCE FILE] [FILE1] ... [-r REF_FRAME] [-idx 'ATOM_INDICES'] [-c] [-f FORMAT] [-v]
+
+    This script aligns one or more given molecules to a reference molecule based on specified atom indices. 
+    It supports both single-structure and multi-structure (multiple frames) files.
+
+    In Standard Mode, the script aligns each specified file to a single reference molecule file. 
+    In Include Mode, the script aligns structures within the reference file itself, along with any additional specified files.
+
+    Arguments:
+    REFERENCE_FILE - Path to the reference molecule file (with .xyz, .pdb, or .sdf extension).
+    FILE(s)        - Path(s) to the molecule file(s) to be aligned (with .xyz, .pdb, or .sdf extension).
+
+    Options:
+    -i, --include       - Include reference structure in alignment. In this mode, structures within the reference file are also aligned to a specified frame.
+    -r, --ref_frame     - (Optional) Frame number in the reference file to use for alignment. Defaults to the first frame if not specified. Applies to both the reference file and other files in Include Mode.
+    -idx, --indices     - (Optional) Indices of atoms used for alignment, specified in a space-separated format, e.g., '1 2 3 4'. If not specified, all atoms are used for alignment.
+    -c, --concatenate   - (Optional) Concatenate all aligned structures into one output file. If not set, each structure's alignment is written to a separate file.
+    -f, --format        - (Optional) Specify the output file format (xyz, pdb, sdf). The default format is the same as the last of the files to be aligned.
+    -v, --verbose       - (Optional) Enable verbose output, which includes RMSD values for each alignment.
+
+    Examples:
+    1. align_molecules reference.xyz molecule1.pdb 5 6
+       This example aligns 'molecule1.pdb' to 'reference.xyz' using atoms 5 and 6 for alignment. 
+       The output is 'molecule1_aligned.pdb'.
+
+    2. align_molecules reference.sdf molecule1.pdb molecule2.pdb -r 5 -idx '1 2 3 4' -v
+       This example aligns 'molecule1.pdb' and 'molecule2.pdb' to the 6th frame (0-indexed) of 'reference.sdf' using atoms 1, 2, 3, and 4 for alignment. 
+       Verbose output is enabled. The outputs are 'molecule1_aligned.pdb' and 'molecule2_aligned.pdb'.
+
+    3. align_molecules -i traj1.xyz traj2.sdf -r 2 -idx '0 2 5 7 9 10' -f pdb -c
+       In this Include Mode example, structures within 'traj1.xyz' and 'traj2.sdf' are aligned to the 3rd frame of 'traj1.xyz' using the specified atom indices. 
+       All aligned structures are concatenated into a single output file 'aligned.pdb'.
+    """
+    print(help_message)
+
+
+# Check for help flag
+if "-h" in sys.argv or len(sys.argv) == 1:
+    print_help()
+    sys.exit(1)
+
+
+# Miniclass for containing supplier data and mols
+class Container:
+    def __init__(self, filename, extension, mols):
+        self.filename = filename
+        self.extension = extension
+        self.mols = mols
+
+    def __getitem__(self, idx):
+        try:
+            mol = self.mols[idx]
+        except IndexError:
+            raise IndexError(
+                f"File {self.filename}{self.extension} has {len(self.mols)} frames. Requested frame {idx} does not exist."
+            )
+
+        return mol
+
+    def __iter__(self):
+        for mol in self.mols:
+            yield mol
+
+
+# Function to load molecule from file
+def load_molecule(file):
+    filename, extension = os.path.splitext(file)
+    extension = extension.lower()
+    if extension not in [".xyz", ".pdb", ".sdf"]:
+        raise ValueError(f"Unsupported file format: {extension}")
+
+    if extension == ".xyz" or extension == ".pdb":
+        tf = tempfile.NamedTemporaryFile()
+        os.system(f"obabel {file} -osdf -O {tf.name} 2> /dev/null")
+        supplier = Chem.SDMolSupplier(tf.name, removeHs=False)
+        tf.close()
+    elif extension == ".sdf":
+        supplier = Chem.SDMolSupplier(file, removeHs=False)
+    else:
+        raise ValueError(f"Unsupported file extension: {extension}")
+
+    container = Container(filename, extension[1:], [mol for mol in supplier])
+
+    return container
+
+
+def write_molecule(containers, extension, concatenate):
+    if extension is not None and extension not in ["xyz", "pdb", "sdf"]:
+        raise ValueError(f"Unsupported file format: {extension}")
+
+    if concatenate:
+        tf = tempfile.NamedTemporaryFile()
+        writer = Chem.SDWriter(tf.name)
+
+        for container in containers:
+            for mol in container:
+                writer.write(mol)
+
+        writer.flush()
+
+        # take the format of the last supplier (arbitrary choice)
+        if extension is None:
+            extension = container.extension
+
+        os.system(f"obabel -isdf {tf.name} -O aligned.{extension} 2> /dev/null")
+        tf.close()
+        return
+
+    for container in containers:
+        tf = tempfile.NamedTemporaryFile()
+        writer = Chem.SDWriter(tf.name)
+
+        for mol in container:
+            writer.write(mol)
+
+        writer.flush()
+
+        if extension is None:
+            extension = container.extension
+
+        os.system(
+            f"obabel -isdf {tf.name} -O {container.filename}_aligned.{extension} 2> /dev/null"
+        )
+        tf.close()
+
+
+# Function to align multiple structures in one file
+def align_multiple_structures(ref_mol, container, atom_indices, verbose):
+    if atom_indices is None:
+        atom_indices = list(range(ref_mol.GetNumAtoms()))
+
+    for idx, mol in enumerate(container):
+        if mol is None:
+            continue
+        try:
+            rmsd = AllChem.AlignMol(
+                mol, ref_mol, atomMap=list(zip(atom_indices, atom_indices))
+            )
+            if verbose:
+                print(
+                    f"{container.filename}.{container.extension}#{idx}: RMSD = {rmsd}"
+                )
+        except Exception as e:
+            print(
+                f"Error aligning frame {container.filename}.{container.extension}#{idx}: {e}"
+            )
+
+
+def main():
+    # fmt: off
+    parser = argparse.ArgumentParser(description='Align molecules to a reference molecule')
+    parser.add_argument('-i', '--include', action='store_true', help='Include reference structure in alignment')
+    parser.add_argument('-r', '--ref_frame', type=int, default=0, help='Frame number in reference file for alignment')
+    parser.add_argument('-idx', '--indices', type=lambda s: [int(item) for item in s.split()], default=None, help='Indices of atoms used for alignment')
+    parser.add_argument('-f', '--format', help='Output file format (.xyz, .pdb, .sdf)')
+    parser.add_argument('-c', '--concatenate', action='store_true', help='Concatenate all structures into one file')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
+    parser.add_argument('files', nargs='+', help='Reference file followed by molecule files')
+    args = parser.parse_args()
+    # fmt: on
+
+    args = parser.parse_args()
+
+    ref_file = args.files[0]
+    ref_mol = copy.deepcopy(load_molecule(ref_file)[args.ref_frame])
+
+    if args.include:
+        files_to_process = args.files
+    else:
+        files_to_process = args.files[1:]
+
+    containers = []
+    for file in files_to_process:
+        container = load_molecule(file)
+        containers.append(container)
+        align_multiple_structures(ref_mol, container, args.indices, args.verbose)
+
+    write_molecule(containers, args.format, args.concatenate)
+
+
+if __name__ == "__main__":
+    main()
+
+
+# # Handling frame and atom indices arguments
+# frame_idx = sys.argv.index("-r") if "-r" in sys.argv else None
+# start_idx = sys.argv.index("-idx") if "-idx" in sys.argv else None
+# format_idx = sys.argv.index("-f") if "-f" in sys.argv else None
+# concatenate_idx = sys.argv.index("-c") if "-c" in sys.argv else None
+
+# options_array = [frame_idx, start_idx, format_idx, concatenate_idx]
+
+# if all(v is None for v in options_array):
+#     options_idx = None
+# else:
+#     options_idx = min(list(filter(None, options_array)))
+
+# # options
+# extension = sys.argv[format_idx + 1] if format_idx is not None else None
+# concatenate = True if "-c" in sys.argv else False
+
+# if start_idx is not None:
+#     atom_indices = [int(i) for i in sys.argv[start_idx + 1].split()]
+# else:
+#     atom_indices = None
+
+# ref_frame = int(sys.argv[frame_idx + 1]) if frame_idx else 0
+
+
+# if "-i" in sys.argv:  # Include ref structure mode
+#     ref_file = sys.argv[2]
+#     ref_mol = copy.deepcopy(load_molecule(ref_file)[ref_frame])
+
+#     containers = []
+
+#     for file in sys.argv[2:options_idx]:
+#         container = load_molecule(file)
+#         containers.append(container)
+#         align_multiple_structures(ref_mol, container, atom_indices)
+
+#     write_molecule(containers, extension, concatenate)
+
+# else:  # Standard mode
+#     ref_file = sys.argv[1]
+#     ref_mol = load_molecule(ref_file)[ref_frame]
+#     molecule_files = sys.argv[2:options_idx]
+
+#     containers = []
+
+#     for file in molecule_files:
+#         container = load_molecule(file)
+#         containers.append(container)
+#         align_multiple_structures(ref_mol, container, atom_indices)
+
+#     write_molecule(containers, extension, concatenate)
+
+
+# -------- OLD VERSION ---------- #
+
+# from rdkit import Chem
+# from rdkit.Chem import AllChem
+# from rdkit.Chem import rdMolTransforms
+# import os
+# import sys
+# import tempfile
+
+# file_1 = sys.argv[1]
+# filename_1 = os.path.splitext(file_1)[0]
+# extension_1 = os.path.splitext(file_1)[1]
+
+# file_2 = sys.argv[2]
+# filename_2 = os.path.splitext(file_2)[0]
+# extension_2 = os.path.splitext(file_2)[1]
+
+# if extension_1 == ".xyz":
+#     tf = tempfile.NamedTemporaryFile()
+#     os.system(f"obabel {file_1} -opdb -O {tf.name} 2> /dev/null")
+#     mol = Chem.MolFromPDBFile(tf.name)
+#     tf.close()
+# else:
+#     mol = Chem.MolFromPDBFile(file_1)
+
+# if extension_2 == ".xyz":
+#     tf = tempfile.NamedTemporaryFile()
+#     os.system(f"obabel {file_2} -opdb -O {tf.name} 2> /dev/null")
+#     ref = Chem.MolFromPDBFile(tf.name)
+#     tf.close()
+# else:
+#     ref = Chem.MolFromPDBFile(file_2)
+
+# indices = [int(i) for i in sys.argv[3:]]
+
+# rmsd = AllChem.AlignMol(
+#     mol,
+#     ref,
+#     atomMap=list(zip(indices, indices)),
+# )
+# print(f"RMSD: {rmsd}")
+
+
+# Chem.MolToPDBFile(mol, f"aligned.pdb")
+# Chem.MolToPDBFile(ref, f"reference.pdb")
