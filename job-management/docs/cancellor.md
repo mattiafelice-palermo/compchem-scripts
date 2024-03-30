@@ -1,7 +1,8 @@
-```
-# Cancellor
+# Cancellor 🎩 - Easy deletion of PBS/SLURM jobs
 
-Greetings. Cancellor is here to help 🧐. In the grand tradition of elegant politicians managing affairs with grace and decisiveness, Cancellor gracefully handles and terminates jobs on computational clusters using PBS and SLURM schedulers. Whether you need to clear the queue for a fresh start or selectively cancel tasks, Cancellor performs the task with the finesse of an old-time chancellor.
+Greetings. Cancellor is here to help 🧐.
+
+In the grand tradition of elegant politicians managing affairs with grace and decisiveness, Cancellor gracefully handles and terminates jobs on computational clusters using PBS and SLURM schedulers. Whether you need to clear the queue for a fresh start or selectively cancel tasks, Cancellor performs the task with the finesse of an old-time chancellor.
 
 ## Overview
 
@@ -64,4 +65,3 @@ For more information on command-line options, run `./cancellor.py -h`.
 ---
 
 Cancellor - Elegantly managing the end of computational tasks, one job at a time.
-```
